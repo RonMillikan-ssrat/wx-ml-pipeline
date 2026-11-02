@@ -1,0 +1,609 @@
+# PIPELINE DEFINITION
+# Name: wx-tmax-iah
+# Description: GSOD next-day Tmax, Houston IAH
+# Inputs:
+#    end_year: int [Default: 2025.0]
+#    learning_rate: float [Default: 0.05]
+#    location: str [Default: 'us-central1']
+#    max_iter: int [Default: 300.0]
+#    project: str [Default: 'wx-ml-pipeline-0']
+#    register: bool [Default: True]
+#    serving_image: str [Default: 'us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-5:latest']
+#    skill_threshold: float [Default: 0.05]
+#    source: str [Default: 'bq']
+#    start_year: int [Default: 2010.0]
+#    stn: str [Default: '722430']
+#    test_start: str [Default: '2024-01-01']
+#    wban: str [Default: '12960']
+components:
+  comp-condition-1:
+    dag:
+      tasks:
+        condition-2:
+          componentRef:
+            name: comp-condition-2
+          inputs:
+            artifacts:
+              pipelinechannel--train-model:
+                componentInputArtifact: pipelinechannel--train-model
+            parameters:
+              pipelinechannel--evaluate-Output:
+                componentInputParameter: pipelinechannel--evaluate-Output
+              pipelinechannel--location:
+                componentInputParameter: pipelinechannel--location
+              pipelinechannel--project:
+                componentInputParameter: pipelinechannel--project
+              pipelinechannel--register:
+                componentInputParameter: pipelinechannel--register
+              pipelinechannel--serving_image:
+                componentInputParameter: pipelinechannel--serving_image
+              pipelinechannel--skill_threshold:
+                componentInputParameter: pipelinechannel--skill_threshold
+          taskInfo:
+            name: skill-gate
+          triggerPolicy:
+            condition: inputs.parameter_values['pipelinechannel--evaluate-Output']
+              > inputs.parameter_values['pipelinechannel--skill_threshold']
+    inputDefinitions:
+      artifacts:
+        pipelinechannel--train-model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        pipelinechannel--evaluate-Output:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--location:
+          parameterType: STRING
+        pipelinechannel--project:
+          parameterType: STRING
+        pipelinechannel--register:
+          parameterType: BOOLEAN
+        pipelinechannel--serving_image:
+          parameterType: STRING
+        pipelinechannel--skill_threshold:
+          parameterType: NUMBER_DOUBLE
+  comp-condition-2:
+    dag:
+      tasks:
+        register-model:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-register-model
+          inputs:
+            artifacts:
+              model:
+                componentInputArtifact: pipelinechannel--train-model
+            parameters:
+              location:
+                componentInputParameter: pipelinechannel--location
+              project:
+                componentInputParameter: pipelinechannel--project
+              serving_image:
+                componentInputParameter: pipelinechannel--serving_image
+              skill:
+                componentInputParameter: pipelinechannel--evaluate-Output
+          taskInfo:
+            name: register-model
+    inputDefinitions:
+      artifacts:
+        pipelinechannel--train-model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        pipelinechannel--evaluate-Output:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--location:
+          parameterType: STRING
+        pipelinechannel--project:
+          parameterType: STRING
+        pipelinechannel--register:
+          parameterType: BOOLEAN
+        pipelinechannel--serving_image:
+          parameterType: STRING
+        pipelinechannel--skill_threshold:
+          parameterType: NUMBER_DOUBLE
+  comp-evaluate:
+    executorLabel: exec-evaluate
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        test:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: NUMBER_DOUBLE
+  comp-extract-gsod:
+    executorLabel: exec-extract-gsod
+    inputDefinitions:
+      parameters:
+        end_year:
+          parameterType: NUMBER_INTEGER
+        project:
+          parameterType: STRING
+        source:
+          parameterType: STRING
+        start_year:
+          parameterType: NUMBER_INTEGER
+        stn:
+          parameterType: STRING
+        wban:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        raw:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-make-features:
+    executorLabel: exec-make-features
+    inputDefinitions:
+      artifacts:
+        raw:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        test_start:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        test:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        train:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: NUMBER_INTEGER
+  comp-register-model:
+    executorLabel: exec-register-model
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        location:
+          parameterType: STRING
+        project:
+          parameterType: STRING
+        serving_image:
+          parameterType: STRING
+        skill:
+          parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-train:
+    executorLabel: exec-train
+    inputDefinitions:
+      artifacts:
+        train:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        learning_rate:
+          parameterType: NUMBER_DOUBLE
+        max_iter:
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-evaluate:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'scikit-learn==1.5.2' 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.18.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate(test: Input[Dataset], model: Input[Model], metrics:\
+          \ Output[Metrics]) -> float:\n    \"\"\"Returns skill vs persistence (tomorrow\
+          \ = today): 1 - RMSE_model / RMSE_persist.\"\"\"\n    import os\n    import\
+          \ joblib\n    import numpy as np\n    import pandas as pd\n\n    d = pd.read_csv(test.path,\
+          \ index_col=0)\n    m = joblib.load(os.path.join(model.path, \"model.joblib\"\
+          ))\n    pred = m.predict(d.drop(columns=\"y\"))\n    rmse = float(np.sqrt(np.mean((pred\
+          \ - d.y) ** 2)))\n    rmse_p = float(np.sqrt(np.mean((d.tmax_l0 - d.y) **\
+          \ 2)))\n    skill = 1 - rmse / rmse_p\n    for k, v in {\"rmse_F\": rmse,\
+          \ \"rmse_persistence_F\": rmse_p, \"skill\": skill,\n                 \"\
+          n_test\": float(len(d))}.items():\n        metrics.log_metric(k, round(v,\
+          \ 4))\n    print(f\"RMSE={rmse:.2f}F  persistence={rmse_p:.2f}F  skill={skill:.3f}\"\
+          )\n    return skill\n\n"
+        image: python:3.11-slim
+    exec-extract-gsod:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - extract_gsod
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'numpy<2.3' 'google-cloud-bigquery==3.27.0' 'db-dtypes' 'pyarrow'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.18.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef extract_gsod(project: str, stn: str, wban: str, start_year: int,\
+          \ end_year: int,\n                 source: str, raw: Output[Dataset]):\n\
+          \    \"\"\"Pull daily GSOD rows for one station. source='bq' or 'synthetic'\
+          \ (offline testing).\"\"\"\n    import numpy as np\n    import pandas as\
+          \ pd\n\n    if source == \"bq\":\n        from google.cloud import bigquery\n\
+          \        sql = f\"\"\"\n          SELECT DATE(CAST(year AS INT64), CAST(mo\
+          \ AS INT64), CAST(da AS INT64)) AS date,\n                 temp, max AS\
+          \ tmax, min AS tmin, dewp, slp, wdsp, prcp\n          FROM `bigquery-public-data.noaa_gsod.gsod*`\n\
+          \          WHERE _TABLE_SUFFIX BETWEEN '{start_year}' AND '{end_year}'\n\
+          \            AND stn = '{stn}' AND wban = '{wban}'\n          ORDER BY date\"\
+          \"\"\n        df = bigquery.Client(project=project).query(sql).to_dataframe()\n\
+          \        # GSOD missing-value sentinels\n        df = df.replace({9999.9:\
+          \ np.nan, 999.9: np.nan, 99.99: np.nan})\n    else:\n        rng = np.random.default_rng(0)\n\
+          \        date = pd.date_range(f\"{start_year}-01-01\", f\"{end_year}-12-31\"\
+          , freq=\"D\")\n        doy = date.dayofyear.to_numpy()\n        seas = 80\
+          \ + 15 * np.sin(2 * np.pi * (doy - 110) / 365.25)\n        anom = np.zeros(len(date))\n\
+          \        for i in range(1, len(date)):                      # AR(1) weather\
+          \ noise\n            anom[i] = 0.7 * anom[i - 1] + rng.normal(0, 4)\n  \
+          \      tmax = seas + anom\n        df = pd.DataFrame({\"date\": date, \"\
+          tmax\": tmax, \"tmin\": tmax - 18 + rng.normal(0, 2, len(date)),\n     \
+          \                      \"temp\": tmax - 9, \"dewp\": tmax - 20 + rng.normal(0,\
+          \ 3, len(date)),\n                           \"slp\": 1015 - 0.3 * anom\
+          \ + rng.normal(0, 2, len(date)),\n                           \"wdsp\": rng.gamma(2,\
+          \ 3, len(date)), \"prcp\": rng.exponential(0.1, len(date))})\n    print(f\"\
+          rows={len(df)}  range={df.date.min()}..{df.date.max()}\")\n    print(df.isna().mean().round(3).to_string())\n\
+          \    df.to_csv(raw.path, index=False)\n\n"
+        image: python:3.11-slim
+    exec-make-features:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - make_features
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'numpy<2.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.18.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef make_features(raw: Input[Dataset], test_start: str,\n       \
+          \           train: Output[Dataset], test: Output[Dataset]) -> int:\n   \
+          \ \"\"\"Lag features, target = tomorrow's Tmax. Time-based split (no shuffling\
+          \ -> no leakage).\"\"\"\n    import numpy as np\n    import pandas as pd\n\
+          \n    df = pd.read_csv(raw.path, parse_dates=[\"date\"]).set_index(\"date\"\
+          ).asfreq(\"D\")\n    df = df.interpolate(limit=2)                      \
+          \ # fill short gaps only\n    f = pd.DataFrame(index=df.index)\n    for\
+          \ k in (0, 1, 2):\n        f[f\"tmax_l{k}\"] = df.tmax.shift(k)\n    f[\"\
+          tmin_l0\"], f[\"dewp_l0\"], f[\"slp_l0\"] = df.tmin, df.dewp, df.slp\n \
+          \   f[\"dslp\"] = df.slp.diff()                          # pressure tendency\n\
+          \    f[\"wdsp_l0\"], f[\"prcp_l0\"] = df.wdsp, df.prcp\n    doy = df.index.dayofyear\n\
+          \    f[\"doy_sin\"], f[\"doy_cos\"] = np.sin(2 * np.pi * doy / 365.25),\
+          \ np.cos(2 * np.pi * doy / 365.25)\n    f[\"y\"] = df.tmax.shift(-1)   \
+          \                      # target\n    f = f.dropna()\n    tr, te = f[f.index\
+          \ < test_start], f[f.index >= test_start]\n    print(f\"train={len(tr)}\
+          \  test={len(te)}  features={f.shape[1] - 1}\")\n    tr.to_csv(train.path)\n\
+          \    te.to_csv(test.path)\n    return len(tr)\n\n"
+        image: python:3.11-slim
+    exec-register-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - register_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform>=1.70'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.18.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef register_model(project: str, location: str, model: Input[Model],\n\
+          \                   serving_image: str, skill: float) -> str:\n    \"\"\"\
+          Upload artifact dir to GEAP Model Registry (no endpoint -> no idle cost).\"\
+          \"\"\n    from google.cloud import aiplatform\n    aiplatform.init(project=project,\
+          \ location=location)\n    m = aiplatform.Model.upload(\n        display_name=\"\
+          wx-tmax-iah\",\n        artifact_uri=model.uri,                 # gs://.../model\
+          \  (dir containing model.joblib)\n        serving_container_image_uri=serving_image,\n\
+          \        labels={\"skill_x1000\": str(int(skill * 1000))},\n    )\n    print(\"\
+          registered\", m.resource_name)\n    return m.resource_name\n\n"
+        image: python:3.11-slim
+    exec-train:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'scikit-learn==1.5.2' 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.18.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train(train: Input[Dataset], max_iter: int, learning_rate: float,\
+          \ model: Output[Model]):\n    import os\n    import joblib\n    import pandas\
+          \ as pd\n    from sklearn.ensemble import HistGradientBoostingRegressor\n\
+          \n    d = pd.read_csv(train.path, index_col=0)\n    X, y = d.drop(columns=\"\
+          y\"), d.y\n    m = HistGradientBoostingRegressor(max_iter=max_iter, learning_rate=learning_rate,\n\
+          \                                      random_state=0).fit(X, y)\n    #\
+          \ Model Registry's prebuilt sklearn server expects <dir>/model.joblib\n\
+          \    os.makedirs(model.path, exist_ok=True)\n    joblib.dump(m, os.path.join(model.path,\
+          \ \"model.joblib\"))\n    model.metadata[\"framework\"] = \"sklearn\"\n\
+          \    model.metadata[\"features\"] = list(X.columns)\n    print(\"saved\"\
+          , model.path, \"| model.uri =\", model.uri)\n\n"
+        image: python:3.11-slim
+        resources:
+          cpuLimit: 2.0
+          memoryLimit: 4.0
+          resourceCpuLimit: '2'
+          resourceMemoryLimit: 4G
+pipelineInfo:
+  description: GSOD next-day Tmax, Houston IAH
+  name: wx-tmax-iah
+root:
+  dag:
+    tasks:
+      condition-1:
+        componentRef:
+          name: comp-condition-1
+        dependentTasks:
+        - evaluate
+        - train
+        inputs:
+          artifacts:
+            pipelinechannel--train-model:
+              taskOutputArtifact:
+                outputArtifactKey: model
+                producerTask: train
+          parameters:
+            pipelinechannel--evaluate-Output:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: evaluate
+            pipelinechannel--location:
+              componentInputParameter: location
+            pipelinechannel--project:
+              componentInputParameter: project
+            pipelinechannel--register:
+              componentInputParameter: register
+            pipelinechannel--serving_image:
+              componentInputParameter: serving_image
+            pipelinechannel--skill_threshold:
+              componentInputParameter: skill_threshold
+        taskInfo:
+          name: register-enabled
+        triggerPolicy:
+          condition: inputs.parameter_values['pipelinechannel--register'] == true
+      evaluate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate
+        dependentTasks:
+        - make-features
+        - train
+        inputs:
+          artifacts:
+            model:
+              taskOutputArtifact:
+                outputArtifactKey: model
+                producerTask: train
+            test:
+              taskOutputArtifact:
+                outputArtifactKey: test
+                producerTask: make-features
+        taskInfo:
+          name: evaluate
+      extract-gsod:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-extract-gsod
+        inputs:
+          parameters:
+            end_year:
+              componentInputParameter: end_year
+            project:
+              componentInputParameter: project
+            source:
+              componentInputParameter: source
+            start_year:
+              componentInputParameter: start_year
+            stn:
+              componentInputParameter: stn
+            wban:
+              componentInputParameter: wban
+        taskInfo:
+          name: extract-gsod
+      make-features:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-make-features
+        dependentTasks:
+        - extract-gsod
+        inputs:
+          artifacts:
+            raw:
+              taskOutputArtifact:
+                outputArtifactKey: raw
+                producerTask: extract-gsod
+          parameters:
+            test_start:
+              componentInputParameter: test_start
+        taskInfo:
+          name: make-features
+      train:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train
+        dependentTasks:
+        - make-features
+        inputs:
+          artifacts:
+            train:
+              taskOutputArtifact:
+                outputArtifactKey: train
+                producerTask: make-features
+          parameters:
+            learning_rate:
+              componentInputParameter: learning_rate
+            max_iter:
+              componentInputParameter: max_iter
+        taskInfo:
+          name: train
+  inputDefinitions:
+    parameters:
+      end_year:
+        defaultValue: 2025.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      learning_rate:
+        defaultValue: 0.05
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      location:
+        defaultValue: us-central1
+        isOptional: true
+        parameterType: STRING
+      max_iter:
+        defaultValue: 300.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      project:
+        defaultValue: wx-ml-pipeline-0
+        isOptional: true
+        parameterType: STRING
+      register:
+        defaultValue: true
+        isOptional: true
+        parameterType: BOOLEAN
+      serving_image:
+        defaultValue: us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-5:latest
+        isOptional: true
+        parameterType: STRING
+      skill_threshold:
+        defaultValue: 0.05
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      source:
+        defaultValue: bq
+        isOptional: true
+        parameterType: STRING
+      start_year:
+        defaultValue: 2010.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      stn:
+        defaultValue: '722430'
+        isOptional: true
+        parameterType: STRING
+      test_start:
+        defaultValue: '2024-01-01'
+        isOptional: true
+        parameterType: STRING
+      wban:
+        defaultValue: '12960'
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.18.0
