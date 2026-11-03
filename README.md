@@ -26,6 +26,10 @@ extract_gsod ─► make_features ─► train ─► evaluate ─► [register?
                  train <2024      sklearn  persistence
 ```
 
+<a href="docs/images/geap-run-graph.png"><img width="480" alt="GEAP Pipelines run graph for wx-tmax-iah: extract-gsod, make-features, train and evaluate all succeeded, with their raw, train, test, model and metrics artifacts, and the nested register-enabled and skill-gate conditions both passed" src="docs/images/geap-run-graph.png" /></a>
+
+*Run graph of the first GEAP run (2026-11-02). Every step succeeded, and with skill 0.185 above the 0.05 threshold, both the `register-enabled` and `skill-gate` conditions passed. Click the image to open it at full resolution, where you can zoom in or download it.*
+
 ## Files
 
 | File | Purpose |
