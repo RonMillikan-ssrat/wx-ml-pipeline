@@ -1,4 +1,4 @@
-# Task: ML on GCP with GEAP Pipelines + Kubeflow
+# Task: ML on GCP with GEAP Pipelines + Kubeflow, Airflow + MLflow
 
 **Goal:** Build a Kubeflow (KFP v2) pipeline that trains a next-day max-temperature model for Houston (IAH) from NOAA GSOD. Run it on your laptop first, then on **Gemini Enterprise Agent Platform (GEAP) Pipelines**, the service formerly called Vertex AI Pipelines. Finish with the model in the GEAP Model Registry.
 
