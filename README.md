@@ -46,6 +46,7 @@ extract_gsod ─► make_features ─► train ─► evaluate ─► [register?
 | `airflow/dags/wx_retrain.py` | Phase 5: weekly champion/challenger retrain and promotion gate |
 | `airflow/docker-compose.yaml` | Phase 5: Airflow 3.4 (LocalExecutor) + Postgres + MLflow 3.18 |
 | `scripts/registry_cli.py` | Phase 5: model versions, manual promote and rollback |
+| `scripts/validate_ghcnh.py` | Phase 5: compare GHCNh-derived daily values with GSOD for the overlapping days |
 | `scripts/drill_bad_model.py` | Phase 5: promote a broken model to exercise automatic rollback |
 | `tests/` | Phase 5: feature parity with `make_features`, idempotency, validation, rollback |
 | `docs/OPERATIONS.md` | Phase 5: runbook for scheduling, backfills, recovery and rollback |
@@ -125,13 +126,15 @@ wx_retrain (Sundays 07:00 UTC)
 |---|---|
 | Scheduling | `CronDataIntervalTimetable`: each run owns one day's interval and processes only that day, never "today" |
 | Backfills | `airflow backfill create ...`; every output is keyed by date and written atomically, so reprocessing overwrites rather than duplicates |
-| Recovery | Retries with exponential backoff for transient errors; immediate failure (no retries) for bad data, so no forecast is built from it; failure alerts to `data/alerts/` and an optional webhook |
+| Recovery | Retries with exponential backoff for transient errors; immediate failure (no retries) for bad data, so no forecast is built from it; immediate failure when the source is missing (404) or more than 10 days stale; failure alerts to `data/alerts/` and an optional webhook |
 | Versioning | Every candidate is an MLflow model version with metrics, training window, Airflow run id and gate decision |
 | Monitoring | Each forecast is verified against the observation once it arrives; rolling skill vs persistence for the production version only, out-of-sample days only |
 | Rollback | Rolling skill < 0 over at least 14 days moves `@production` back to `@previous` before the next forecast; idempotent, and suppressed in backfills unless explicitly allowed |
 | Training/serving skew | `wxml/features.py` must match `make_features` in `pipeline.py`; `tests/test_feature_parity.py` runs the real KFP component and fails on any difference |
 
-Data comes from NCEI's public GSOD CSV files (same product as the BigQuery table, no GCP credentials needed). `WX_SOURCE=synthetic` gives offline, deterministic data for development and drills.
+**Data source.** NCEI retired GSOD (the dataset behind the BigQuery table used in Phases 1-3) on 2025-08-29, so it has no data after that date. The operations layer computes the same daily values from **GHCN-hourly** (GHCNh), the hourly dataset that replaced ISD, which GSOD itself was computed from. Station `USW00012960` (IAH), UTC days, converted to GSOD's units, so the model features are unchanged. `scripts/validate_ghcnh.py` compares the result with GSOD for the days both cover. `WX_SOURCE=synthetic` gives offline, deterministic data for development and drills.
+
+The Phase 1-3 KFP pipeline still reads GSOD from BigQuery for 2010-2025, which is fine for that training exercise, but it cannot be run on current data.
 
 ```bash
 cd airflow

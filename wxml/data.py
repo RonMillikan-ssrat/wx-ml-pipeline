@@ -1,9 +1,12 @@
-"""GSOD observations: fetch, cache, check availability, validate.
+"""Daily observations: fetch, summarize, cache, check availability, validate.
 
-Real data comes from NCEI's per-station, per-year CSV files
-(https://www.ncei.noaa.gov/data/global-summary-of-the-day/access/<year>/<station>.csv),
-the same GSOD product the KFP pipeline reads from BigQuery, with the same units
-(degrees F, mb, knots, inches). No GCP credentials are needed.
+Real data comes from NOAA GHCN-hourly (GHCNh), one pipe-separated file per
+station-year:
+  https://www.ncei.noaa.gov/oa/global-historical-climatology-network/hourly/access/by-year/<year>/psv/GHCNh_<station>_<year>.psv
+GHCNh replaced ISD, the hourly dataset NCEI used to compute GSOD. GSOD itself
+was retired on 2025-08-29, so this module computes the same daily summaries
+from the hourly reports and converts them to GSOD's units (degrees F, mb,
+knots, inches). That keeps the model's features identical to the KFP pipeline.
 
 Synthetic data is a deterministic offline stand-in for development and drills.
 """
@@ -17,13 +20,19 @@ import pandas as pd
 from . import config, store
 
 COLUMNS = ["date", "temp", "tmax", "tmin", "dewp", "slp", "wdsp", "prcp"]
-NCEI_COLUMNS = {"DATE": "date", "TEMP": "temp", "MAX": "tmax", "MIN": "tmin",
-                "DEWP": "dewp", "SLP": "slp", "WDSP": "wdsp", "PRCP": "prcp"}
+HOURLY_VARS = ["temperature", "dew_point_temperature", "sea_level_pressure",
+               "wind_speed", "precipitation"]
+MS_TO_KNOTS = 1.943844
 SENTINELS = {9999.9: np.nan, 999.9: np.nan, 99.99: np.nan}   # GSOD "no report" values
 
 
 class DataValidationError(ValueError):
     """Bad data. Retrying will not fix it, so tasks treat this as a hard failure."""
+
+
+class SourceUnavailable(RuntimeError):
+    """The upstream source is missing or has stopped updating (a retired dataset,
+    a moved URL). Different from "not published yet": waiting will not help."""
 
 
 # ---------------------------------------------------------------- synthetic
@@ -69,44 +78,95 @@ def _synthetic_year(year: int, now: datetime) -> pd.DataFrame:
     return out
 
 
-# ---------------------------------------------------------------- NCEI
-def _ncei_year(year: int) -> pd.DataFrame:
+# ---------------------------------------------------------------- GHCNh
+def summarize_hourly(h: pd.DataFrame) -> pd.DataFrame:
+    """Hourly GHCNh rows -> one row per UTC day, in GSOD units.
+
+    tmax/tmin/temp  max/min/mean of hourly temperature (C -> F)
+    dewp            mean dew point (C -> F)
+    slp             mean sea-level pressure (hPa = mb)
+    wdsp            mean wind speed (m/s -> knots)
+    prcp            sum of precipitation in routine hourly reports (mm -> inches)
+    hours           distinct UTC hours with a temperature report
+    Values whose quality code is in config.REJECT_QC are dropped first. Days with
+    fewer than MIN_HOURS_PER_DAY hours are blanked (incomplete, e.g. the newest day).
+    """
+    h = h.copy()
+    t = pd.to_datetime(h["DATE"], utc=True)
+    h["day"], h["hour"] = t.dt.date, t.dt.hour
+    rejected = {}
+    for v in HOURLY_VARS:
+        h[v] = pd.to_numeric(h[v], errors="coerce")
+        qc = f"{v}_Quality_Code"
+        if qc in h.columns:
+            bad = h[qc].astype(str).str.strip().isin(config.REJECT_QC)
+            rejected[v] = int((bad & h[v].notna()).sum())
+            h.loc[bad, v] = np.nan
+    routine = pd.to_numeric(h["Minute"], errors="coerce") == config.ROUTINE_MINUTE
+    g = h.groupby("day")
+    d = pd.DataFrame({
+        "tmax": g["temperature"].max(), "tmin": g["temperature"].min(),
+        "temp": g["temperature"].mean(), "dewp": g["dew_point_temperature"].mean(),
+        "slp": g["sea_level_pressure"].mean(), "wdsp": g["wind_speed"].mean(),
+        "prcp": h[routine].groupby("day")["precipitation"].sum(min_count=0),
+        "hours": h[h["temperature"].notna()].groupby("day")["hour"].nunique(),
+    })
+    d["hours"] = d["hours"].fillna(0).astype(int)
+    d["prcp"] = d["prcp"].fillna(0.0)
+    for c in ("tmax", "tmin", "temp", "dewp"):
+        d[c] = d[c] * 9 / 5 + 32
+    d["wdsp"] = d["wdsp"] * MS_TO_KNOTS
+    d["prcp"] = d["prcp"] / 25.4
+    incomplete = d["hours"] < config.MIN_HOURS_PER_DAY
+    d.loc[incomplete, COLUMNS[1:]] = np.nan
+    d = d.rename_axis("date").reset_index()
+    d.attrs["rejected_by_qc"] = rejected
+    return d[COLUMNS + ["hours"]]
+
+
+def _ghcnh_year(year: int, now: datetime) -> pd.DataFrame:
     import requests   # imported here so offline/synthetic use needs no network stack
-    url = config.NCEI_URL.format(year=year, station=config.STATION_ID)
-    r = requests.get(url, timeout=60)
+    url = config.GHCNH_URL.format(year=year, station=config.STATION_ID)
+    r = requests.get(url, timeout=300)
     if r.status_code == 404:
-        return pd.DataFrame(columns=COLUMNS)          # year not published yet
+        if year > now.year or (year == now.year and now.timetuple().tm_yday <= 7):
+            return pd.DataFrame(columns=COLUMNS + ["hours"])   # year file not started yet
+        raise SourceUnavailable(f"{url} returned 404: the source file is missing "
+                                "(dataset moved or retired?)")
     r.raise_for_status()                              # 5xx etc. -> exception -> Airflow retries
-    raw = pd.read_csv(io.StringIO(r.text), dtype=str, skipinitialspace=True)
-    missing = set(NCEI_COLUMNS) - set(raw.columns)
+    cols = ["DATE", "Minute"] + HOURLY_VARS + [f"{v}_Quality_Code" for v in HOURLY_VARS]
+    h = pd.read_csv(io.StringIO(r.text), sep="|", usecols=lambda c: c in cols,
+                    dtype=str, low_memory=False)
+    missing = {"DATE", "Minute", "temperature"} - set(h.columns)
     if missing:
-        raise DataValidationError(f"NCEI file {url} is missing columns {sorted(missing)}")
-    df = raw[list(NCEI_COLUMNS)].rename(columns=NCEI_COLUMNS)
-    df["date"] = pd.to_datetime(df["date"].str.strip()).dt.date
-    for c in COLUMNS[1:]:
-        df[c] = pd.to_numeric(df[c].str.strip(), errors="coerce")
-    return df.replace(SENTINELS)[COLUMNS]
+        raise SourceUnavailable(f"{url} is missing columns {sorted(missing)} (format changed?)")
+    for v in HOURLY_VARS:
+        if v not in h.columns:
+            h[v] = np.nan
+    return summarize_hourly(h)
 
 
 # ---------------------------------------------------------------- cache
 def _cache_path(year: int):
-    return config.DATA_DIR / "raw" / f"gsod_{config.STATION_ID}_{year}_{config.SOURCE}.csv"
+    return config.DATA_DIR / "raw" / f"daily_{config.STATION_ID}_{year}_{config.SOURCE}.csv"
 
 
-def fetch_year(year: int, force: bool = False, now: datetime | None = None) -> pd.DataFrame:
-    """Return one station-year, using a local cache.
+def fetch_year(year: int, force: bool = False, now: datetime | None = None,
+               max_age_hours: float | None = None) -> pd.DataFrame:
+    """Return one station-year of daily rows, using a local cache of the summary.
 
-    Past years are downloaded once. The current (or future) year is
-    re-downloaded when the cache is older than REFRESH_HOURS or force=True,
-    because NCEI keeps appending to it.
+    Past years are downloaded once. A year that is still growing is
+    re-downloaded when its cache is older than max_age_hours (default
+    REFRESH_HOURS) or force=True, because NOAA keeps appending to it.
     """
     now = now or datetime.now(timezone.utc)
     path = _cache_path(year)
+    max_age = config.REFRESH_HOURS if max_age_hours is None else max_age_hours
     still_growing = year >= now.year - (1 if now.month == 1 else 0)
     stale = (not path.exists()
-             or (still_growing and time.time() - path.stat().st_mtime > config.REFRESH_HOURS * 3600))
+             or (still_growing and time.time() - path.stat().st_mtime > max_age * 3600))
     if force or stale:
-        df = _synthetic_year(year, now) if config.SOURCE == "synthetic" else _ncei_year(year)
+        df = _synthetic_year(year, now) if config.SOURCE == "synthetic" else _ghcnh_year(year, now)
         store.atomic_write_text(path, df.to_csv(index=False))
     df = pd.read_csv(path)
     df["date"] = pd.to_datetime(df["date"]).dt.date
@@ -121,11 +181,23 @@ def load_range(start: date, end: date, force_refresh: bool = False) -> pd.DataFr
     return df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
 
 
-def observation_available(d: date) -> bool:
-    """True once day d has a published, non-missing Tmax. Forces a fresh download."""
-    df = fetch_year(d.year, force=True)
-    row = df[df.date == d]
-    return len(row) == 1 and pd.notna(row.tmax.iloc[0])
+def observation_available(d: date, now: datetime | None = None) -> bool:
+    """True once day d is complete (enough hourly reports) in the source.
+
+    Raises SourceUnavailable if the source looks retired or stalled: its newest
+    complete day is more than MAX_SOURCE_LAG_DAYS behind the clock. Without
+    this check a dead feed looks exactly like "not published yet", and a
+    sensor would simply wait until it timed out.
+    """
+    now = now or datetime.now(timezone.utc)
+    df = fetch_year(d.year, now=now, max_age_hours=1)
+    complete = df[df.tmax.notna()]
+    newest = complete.date.max() if len(complete) else None
+    if d.year == now.date().year and (
+            newest is None or (now.date() - newest).days > config.MAX_SOURCE_LAG_DAYS):
+        raise SourceUnavailable(f"newest complete day in {config.SOURCE} is {newest}; "
+                                f"more than {config.MAX_SOURCE_LAG_DAYS} days behind {now.date()}")
+    return bool((complete.date == d).any())
 
 
 # ---------------------------------------------------------------- validation
@@ -146,7 +218,7 @@ def validate_window(df: pd.DataFrame, d: date, window_days: int) -> dict:
     bad_slp = df[(df.slp < 900) | (df.slp > 1090)]
     if len(bad_slp):
         problems.append(f"sea-level pressure out of range on {list(bad_slp.date)}")
-    days_present = df.date.nunique()
+    days_present = df[df.tmax.notna()].date.nunique()
     if days_present < window_days * 0.7:
         problems.append(f"only {days_present}/{window_days} days present in the window")
     if problems:

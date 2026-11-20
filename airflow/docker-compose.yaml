@@ -40,7 +40,8 @@ x-airflow-common:
     # --- wx pipeline settings (see wxml/config.py for all of them) ---
     PYTHONPATH: /opt/wx
     WX_DATA_DIR: /opt/wx/data
-    WX_SOURCE: ${WX_SOURCE:-ncei}
+    WX_SOURCE: ${WX_SOURCE:-ghcnh}
+    WX_REJECT_QC: ${WX_REJECT_QC:-}
     WX_ALERT_WEBHOOK: ${WX_ALERT_WEBHOOK:-}
     MLFLOW_TRACKING_URI: http://mlflow:5000
     MLFLOW_HTTP_REQUEST_MAX_RETRIES: '2'      # fail fast to Airflow's own retries

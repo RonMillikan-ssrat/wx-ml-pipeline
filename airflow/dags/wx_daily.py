@@ -26,6 +26,9 @@ Recovery
     without retries, because retrying will not fix bad data.
   - Late data: the sensor waits in reschedule mode (it frees its worker slot
     between checks) for up to 5 days, then fails and alerts.
+  - Dead source: a missing file (404) or a feed more than 10 days behind
+    fails the sensor immediately. This is how GSOD's retirement in 2025
+    would have shown up: as an alert, not as a sensor waiting forever.
   - Every task failure calls wxml.alerts.task_failed.
   - All outputs are written atomically and keyed by date, so clearing a task
     or re-running a day overwrites rather than duplicates.
@@ -64,6 +67,8 @@ def hard_fail_on_bad_data(fn):
             return fn(*a, **kw)
         except data.DataValidationError as e:
             raise AirflowFailException(f"data validation failed: {e}") from e
+        except data.SourceUnavailable as e:
+            raise AirflowFailException(f"source unavailable: {e}") from e
     return wrapper
 
 
@@ -85,12 +90,14 @@ def hard_fail_on_bad_data(fn):
 )
 def wx_daily():
 
-    @task.sensor(poke_interval=timedelta(minutes=30), timeout=timedelta(days=5), mode="reschedule")
+    @task.sensor(poke_interval=timedelta(hours=1), timeout=timedelta(days=5), mode="reschedule")
     def wait_for_obs() -> PokeReturnValue:
-        """Wait until NCEI has published day D (GSOD normally lags a few days)."""
+        """Wait until GHCNh has a complete day D (it lags about 3 days)."""
         d = obs_day()
         try:
             ready = data.observation_available(d)
+        except data.SourceUnavailable as e:         # missing or stalled feed: waiting won't help
+            raise AirflowFailException(f"source unavailable: {e}") from e
         except Exception as e:                      # a network blip is "not yet", not a failure
             print(f"availability check failed, will try again: {e}")
             ready = False

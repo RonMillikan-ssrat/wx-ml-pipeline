@@ -6,7 +6,7 @@ watch model skill, roll back a degraded model, and issue tomorrow's forecast.
 
 Modules
   config    settings, all overridable by environment variables
-  data      GSOD fetch (NCEI CSV or offline synthetic), caching, validation
+  data      GHCN-hourly fetch, daily summaries in GSOD units, caching, validation
   features  feature engineering, identical to the KFP make_features step
   model     train / evaluate (same model and metrics as the KFP pipeline)
   store     atomic, idempotent JSON partitions for forecasts and verifications

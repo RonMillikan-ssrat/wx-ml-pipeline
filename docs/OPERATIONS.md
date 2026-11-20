@@ -42,6 +42,22 @@ data-interval timetable is used here on purpose.
 `max_active_runs=1`. Day D's `verify` reads the forecast that day D-1's run
 wrote, so runs must finish in date order. Consequence: see 4.3.
 
+### Data source
+
+| Item | Value |
+|---|---|
+| Source | NOAA GHCN-hourly, `by-year/<YYYY>/psv/GHCNh_USW00012960_<YYYY>.psv` (about 35 MB per year) |
+| Daily summary | UTC day: max/min/mean temperature, mean dew point, mean sea-level pressure, mean wind, precipitation summed over routine :53 reports; days with fewer than 18 hours of temperature are treated as missing |
+| Units | Converted to GSOD's (F, mb, knots, inches) so the features match the KFP pipeline |
+| Lag | About 3 days behind real time (checked 2026-11-20) |
+| Why not GSOD | NCEI retired GSOD on 2025-08-29; no data after that date |
+
+Before training on real data, run the comparison with GSOD (overlap: Jan to Aug 2025):
+
+```bash
+wxpy /opt/wx/scripts/validate_ghcnh.py
+```
+
 ## 2. First start (bootstrap)
 
 ```bash
@@ -49,6 +65,7 @@ cd airflow && cp .env.example .env
 sed -i "s/^AIRFLOW_UID=.*/AIRFLOW_UID=$(id -u)/" .env
 docker compose up -d --build
 af dags unpause wx_retrain      # runs the latest completed week -> first model -> @production
+                                # (first run downloads ~17 years of GHCNh, ~600 MB: several minutes)
 af dags list-runs wx_retrain    # wait for success
 af dags unpause wx_daily        # creates a run for every day since start_date (catchup)
 ```
@@ -61,6 +78,10 @@ is pointless; reprocessing old days is not. That is the catchup decision for eac
 
 A manual run (`af dags trigger wx_retrain`) has `logical_date=None` in Airflow
 3; `wx_retrain` falls back to yesterday as its end date.
+
+`af dags test wx_daily <date>` runs one day in-process for debugging. Its
+interval is inferred as the one **ending** at that date, so
+`af dags test wx_daily 2026-11-12T06:00:00+00:00` processes D = 2026-11-11.
 
 ## 3. Backfills (reprocessing history)
 
@@ -95,9 +116,10 @@ backfill overwrites rather than duplicates.
 
 | Failure | Example | Handling |
 |---|---|---|
-| Transient | NCEI timeout, MLflow restarting | `retries=3`, exponential backoff from 2 min (cap 30 min). Alert only after the last try fails. |
+| Transient | NOAA download timeout, MLflow restarting | `retries=3`, exponential backoff from 2 min (cap 30 min). Alert only after the last try fails. |
 | Bad data | Impossible temperature, missing day | `AirflowFailException`: fails on the first try, no retries (retrying will not fix data). Downstream tasks become `upstream_failed`, so **no forecast is made from bad data**. Alert immediately. |
-| Late data | NCEI has not published day D yet | Sensor `wait_for_obs` in reschedule mode: checks every 30 min, frees its slot in between, gives up after 5 days |
+| Late data | GHCNh does not have a complete day D yet | Sensor `wait_for_obs` in reschedule mode: checks every hour, frees its slot in between, gives up after 5 days |
+| Dead source | File 404s, or newest complete day > 10 days old | Sensor and retrain fail immediately with "source unavailable" and alert. This is how GSOD's retirement would have shown up. |
 | Registry outage | MLflow unreachable | Raises (it is never mistaken for "no model registered"), then retried as transient |
 
 Alerts: JSON in `data/alerts/`, the task log, and `WX_ALERT_WEBHOOK` if set.
@@ -116,7 +138,7 @@ idempotent: same day in, same files out.
 
 ### 4.3 Gotcha: re-runs queue behind a waiting sensor
 
-The newest daily run usually sits in `wait_for_obs` until NCEI publishes, and
+The newest daily run usually sits in `wait_for_obs` until GHCNh has the day, and
 with `max_active_runs=1` it holds the only slot. A cleared **existing** run
 (including one re-run with `--reprocess-behavior completed`) stays `queued`
 until that sensor finishes. Backfills of days that have **no** run yet are not
