@@ -1,0 +1,186 @@
+# Local operations stack: Airflow 3.4 (LocalExecutor) + Postgres + MLflow.
+#
+# Adapted from the official Airflow 3.4.0 docker-compose.yaml: CeleryExecutor,
+# Redis, workers, Flower and the triggerer are removed (LocalExecutor runs
+# tasks inside the scheduler container; nothing here uses deferrable tasks),
+# and an MLflow server is added.
+#
+#   cd airflow
+#   cp .env.example .env            # then: sed -i "s/^AIRFLOW_UID=.*/AIRFLOW_UID=$(id -u)/" .env
+#   docker compose up -d --build
+#   Airflow UI  http://localhost:8080   (airflow / airflow)
+#   MLflow UI   http://localhost:5000
+#
+# The whole repository is mounted at /opt/wx, so edits to DAGs or wxml/ are
+# picked up without rebuilding. Outputs (forecasts, verification, alerts,
+# raw data cache) land in ../data on the host.
+---
+x-airflow-common:
+  &airflow-common
+  build:
+    context: ..
+    dockerfile: airflow/Dockerfile
+  image: wx-airflow:3.4.0
+  env_file:
+    - .env
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:-}
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/wx/airflow/dags
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
+    AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # --- wx pipeline settings (see wxml/config.py for all of them) ---
+    PYTHONPATH: /opt/wx
+    WX_DATA_DIR: /opt/wx/data
+    WX_SOURCE: ${WX_SOURCE:-ghcnh}
+    WX_REJECT_QC: ${WX_REJECT_QC:-}
+    WX_ALERT_WEBHOOK: ${WX_ALERT_WEBHOOK:-}
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_HTTP_REQUEST_MAX_RETRIES: '2'      # fail fast to Airflow's own retries
+    MLFLOW_HTTP_REQUEST_TIMEOUT: '30'
+    MLFLOW_DISABLE_TELEMETRY: 'true'
+  volumes:
+    - ..:/opt/wx
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+    mlflow:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  mlflow:
+    build:
+      context: ..
+      dockerfile: airflow/mlflow.Dockerfile
+    image: wx-mlflow:3.18.0
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --allowed-hosts mlflow,mlflow:5000,localhost,localhost:5000,127.0.0.1,127.0.0.1:5000
+    # --allowed-hosts: MLflow 3.x rejects requests whose Host header is not on
+    # this list (DNS-rebinding protection). Airflow reaches it as "mlflow:5000".
+    environment:
+      MLFLOW_DISABLE_TELEMETRY: 'true'
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-volume:/mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: always
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-apiserver:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -v -p /opt/airflow/{logs,config} /opt/wx/data
+        /entrypoint airflow version
+        /entrypoint airflow config list >/dev/null
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/{logs,config} /opt/wx/data
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+
+  # Run CLI commands: docker compose run --rm airflow-cli dags list
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command:
+      - bash
+      - -c
+      - airflow
+
+volumes:
+  postgres-db-volume:
+  mlflow-volume:

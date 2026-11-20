@@ -3,3 +3,9 @@ __pycache__/
 local_outputs/
 *.log
 geap-kfp-task.zip
+data/
+airflow/logs/
+airflow/config/
+airflow/.env
+mlruns/
+.pytest_cache/
