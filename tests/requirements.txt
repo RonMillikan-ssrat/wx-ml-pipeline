@@ -1,0 +1,12 @@
+# Test environment: the operations libraries plus kfp for the parity test.
+# (Separate from airflow/requirements-airflow.txt because kfp pins its own requests.)
+pandas==2.2.3
+numpy==2.2.6
+scikit-learn==1.5.2
+joblib==1.6.0
+skops==0.16.0
+mlflow-skinny==3.18.0
+kfp==2.18.0
+sqlalchemy        # MLflow SQLite store used by the tests
+alembic
+pytest

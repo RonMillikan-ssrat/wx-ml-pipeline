@@ -1,0 +1,11 @@
+# Installed into the Airflow image on top of apache/airflow:3.4.0.
+# These versions were tested together with Airflow 3.4.0.
+# scikit-learn must match pipeline.py (SKLEARN) so models trained by either
+# path load in the other.
+pandas==2.2.3
+numpy==2.2.6
+scikit-learn==1.5.2
+joblib==1.6.0
+skops==0.16.0
+mlflow-skinny==3.18.0
+requests==2.34.2
