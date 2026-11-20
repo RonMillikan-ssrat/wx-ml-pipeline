@@ -33,6 +33,10 @@ REJECT_QC = {c.strip() for c in _env("WX_REJECT_QC", "").split(",") if c.strip()
 # routine report and would double-count.
 ROUTINE_MINUTE = _env("WX_ROUTINE_MINUTE", 53, int)
 
+# A day that is still incomplete when a day this many days later is already
+# complete is treated as a gap in the source (it is not coming), not as late.
+GAP_CONFIRM_DAYS = _env("WX_GAP_CONFIRM_DAYS", 2, int)
+
 # The source is "stale" (the sensor fails instead of waiting) when its newest
 # observation is older than this. Catches a retired or stalled upstream feed.
 MAX_SOURCE_LAG_DAYS = _env("WX_MAX_SOURCE_LAG_DAYS", 10, int)
@@ -44,6 +48,10 @@ SYNTH_LAG_DAYS = _env("WX_SYNTH_LAG_DAYS", 2, int)
 # Synthetic data only, for failure drills: report an impossible Tmax (150 F)
 # on this date (YYYY-MM-DD) so validation has something to reject.
 DRILL_BAD_OBS_DATE = _env("WX_DRILL_BAD_OBS_DATE", "")
+
+# Synthetic data only, for drills: comma-separated dates (YYYY-MM-DD) with no
+# observations, to simulate a gap in the source.
+DRILL_GAP_DATES = {d.strip() for d in _env("WX_DRILL_GAP_DATES", "").split(",") if d.strip()}
 
 DATA_DIR = Path(_env("WX_DATA_DIR", "./data"))
 

@@ -109,3 +109,16 @@ def test_gate(env):
     assert not ops.gate(worse)[0]
     weak = {**good, "candidate": {"skill": 0.01, "rmse_F": 3.0}}
     assert not ops.gate(weak)[0]
+
+
+def test_forecast_skips_until_lags_are_complete(env, monkeypatch):
+    from wxml import data, ops, registry
+    _train_and_promote(date(2026, 6, 1), "train-gap")
+    monkeypatch.setattr(env, "DRILL_GAP_DATES", {"2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12"})
+    import shutil
+    shutil.rmtree(env.DATA_DIR / "raw")                    # regenerate the year with the gap
+    for d in (13, 14):                                     # lags reach back into the gap
+        with pytest.raises(data.InsufficientHistory, match="lag inputs missing"):
+            ops.forecast_day(date(2026, 7, d), "r")
+    rec = ops.forecast_day(date(2026, 7, 15), "r")         # 13, 14, 15 complete again
+    assert rec["valid_date"] == "2026-07-16" and registry.alias_version("production")

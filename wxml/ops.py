@@ -16,6 +16,12 @@ WINDOW_DAYS = 14     # history needed to build one day's features (lags, interpo
 
 
 # ---------------------------------------------------------------- daily
+def record_gap(status: dict, run_id: str) -> dict:
+    rec = {**status, "airflow_run_id": run_id}
+    store.write_json(config.DATA_DIR / "gaps" / f"date={status['date']}.json", rec)
+    return rec
+
+
 def validate_day(d: date) -> dict:
     df = data.load_range(d - timedelta(days=WINDOW_DAYS - 1), d)
     return data.validate_window(df, d, WINDOW_DAYS)
@@ -56,7 +62,11 @@ def forecast_day(d: date, run_id: str) -> dict:
     raw = data.load_range(d - timedelta(days=WINDOW_DAYS - 1), d)
     feats = build_features(raw, with_target=False)
     if feats.empty or feats.index[-1].date() != d:
-        raise data.DataValidationError(f"could not build complete features for {d}")
+        missing = sorted(set(pd.date_range(d - timedelta(days=2), d).date) -
+                         set(raw[raw.tmax.notna()].date))
+        raise data.InsufficientHistory(
+            f"cannot build features for {d}: lag inputs missing for {missing} "
+            "(gap in the source); forecasting resumes after 3 complete days")
     row = feats.iloc[[-1]][FEATURES]
     valid = d + timedelta(days=1)
     train_end = date.fromisoformat(tags["train_end"])

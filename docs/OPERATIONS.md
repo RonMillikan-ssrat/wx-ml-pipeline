@@ -148,6 +148,7 @@ backfill overwrites rather than duplicates.
 | Transient | NOAA download timeout, MLflow restarting | `retries=3`, exponential backoff from 2 min (cap 30 min). Alert only after the last try fails. |
 | Bad data | Impossible temperature, missing day | `AirflowFailException`: fails on the first try, no retries (retrying will not fix data). Downstream tasks become `upstream_failed`, so **no forecast is made from bad data**. Alert immediately. |
 | Late data | GHCNh does not have a complete day D yet | Sensor `wait_for_obs` in reschedule mode: checks every hour, frees its slot in between, gives up after 5 days |
+| Gap in the source | Day D still incomplete (< 18 hours) when a day 2+ days later is complete, e.g. IAH 2026-11-09 to 11-12 | Sensor finishes with status `missing`; `validate_obs` writes `data/gaps/date=D.json` and **skips**, so the rest of the run skips and the run still succeeds. Later days are not blocked. Forecasts whose lag inputs fall in a gap skip too, and resume after 3 complete days. |
 | Dead source | File 404s, or newest complete day > 10 days old | Sensor and retrain fail immediately with "source unavailable" and alert. This is how GSOD's retirement would have shown up. |
 | Registry outage | MLflow unreachable | Raises (it is never mistaken for "no model registered"), then retried as transient |
 
@@ -201,6 +202,7 @@ Use `WX_SOURCE=synthetic` in `.env` for drills.
 | Late data | Synthetic data publishes 2 days late (`WX_SYNTH_LAG_DAYS`) | Newest run: `wait_for_obs` = `up_for_reschedule`, log "not published yet" |
 | Bad model, then rollback | `wxpy /opt/wx/scripts/drill_bad_model.py`, then backfill 20 days with `--reprocess-behavior completed`; then repeat the last day with `--dag-run-conf '{"allow_actions": true}'` | First pass: `WOULD ROLL BACK v3 (skill -0.525)`. With actions: `{'changed': True, 'production': '2', 'rolled_back': '3'}`; same run's forecast made by v2 |
 | Registry outage | `docker compose stop mlflow`, reprocess a day, wait for `up_for_retry`, `docker compose start mlflow` | `check_skill` failed on the outage, then succeeded on the next retry; no alert sent |
+| Source gap | Set `WX_DRILL_GAP_DATES=2026-11-09,2026-11-10,2026-11-11,2026-11-12`, run days Nov 8 to 15 | Every run `success`. Nov 9-12: `status: missing`, gap records written, tasks skipped. Nov 13 and 14: forecast skipped (lag inputs in the gap). Nov 15: forecast for Nov 16 issued |
 | Bad data | Set `WX_DRILL_BAD_OBS_DATE=2026-11-16`, recreate containers, reprocess that day | `validate_obs` failed on its only try, downstream `upstream_failed`, alert JSON written. Removed the setting, cleared with `--only-failed --downstream`: run succeeded |
 
 The synthetic year file is cached in `data/raw/`; delete the current year's

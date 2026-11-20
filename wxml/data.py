@@ -30,6 +30,11 @@ class DataValidationError(ValueError):
     """Bad data. Retrying will not fix it, so tasks treat this as a hard failure."""
 
 
+class InsufficientHistory(ValueError):
+    """Not enough complete recent days to build features (a gap in the source).
+    Expected and temporary, so tasks skip rather than fail."""
+
+
 class SourceUnavailable(RuntimeError):
     """The upstream source is missing or has stopped updating (a retired dataset,
     a moved URL). Different from "not published yet": waiting will not help."""
@@ -75,6 +80,8 @@ def _synthetic_year(year: int, now: datetime) -> pd.DataFrame:
     out = df[keep].reset_index(drop=True)
     if config.DRILL_BAD_OBS_DATE:                     # failure drill, see config.py
         out.loc[out.date == date.fromisoformat(config.DRILL_BAD_OBS_DATE), "tmax"] = 150.0
+    for g in config.DRILL_GAP_DATES:                  # gap drill, see config.py
+        out.loc[out.date == date.fromisoformat(g), COLUMNS[1:]] = np.nan
     return out
 
 
@@ -181,9 +188,15 @@ def load_range(start: date, end: date, force_refresh: bool = False) -> pd.DataFr
     return df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
 
 
-def observation_available(d: date, now: datetime | None = None) -> bool:
-    """True once day d is complete (enough hourly reports) in the source.
+def observation_status(d: date, now: datetime | None = None) -> dict:
+    """Is day d complete in the source yet?
 
+    status "available": d is complete (enough hourly reports).
+    status "pending":   d is not complete yet and nothing much newer is either;
+                        keep waiting (GHCNh lags about 3 days).
+    status "missing":   d is incomplete but a day GAP_CONFIRM_DAYS or more
+                        later is already complete. The source has a gap; d is
+                        not coming, and waiting would only block later days.
     Raises SourceUnavailable if the source looks retired or stalled: its newest
     complete day is more than MAX_SOURCE_LAG_DAYS behind the clock. Without
     this check a dead feed looks exactly like "not published yet", and a
@@ -197,7 +210,20 @@ def observation_available(d: date, now: datetime | None = None) -> bool:
             newest is None or (now.date() - newest).days > config.MAX_SOURCE_LAG_DAYS):
         raise SourceUnavailable(f"newest complete day in {config.SOURCE} is {newest}; "
                                 f"more than {config.MAX_SOURCE_LAG_DAYS} days behind {now.date()}")
-    return bool((complete.date == d).any())
+    row = df[df.date == d]
+    hours = int(row["hours"].iloc[0]) if len(row) and "hours" in row and pd.notna(row["hours"].iloc[0]) else None
+    if (complete.date == d).any():
+        status = "available"
+    elif newest is not None and (newest - d).days >= config.GAP_CONFIRM_DAYS:
+        status = "missing"
+    else:
+        status = "pending"
+    return {"date": d.isoformat(), "status": status, "hours": hours,
+            "newest_complete": newest.isoformat() if newest else None}
+
+
+def observation_available(d: date, now: datetime | None = None) -> bool:
+    return observation_status(d, now)["status"] == "available"
 
 
 # ---------------------------------------------------------------- validation

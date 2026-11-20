@@ -91,3 +91,22 @@ def test_stale_source_is_detected(monkeypatch):
     later = datetime(2026, 11, 20, tzinfo=timezone.utc)      # 18 days with nothing new
     with pytest.raises(data.SourceUnavailable, match="behind"):
         data.observation_available(date(2026, 11, 3), now=later)
+
+
+def test_gap_vs_pending(monkeypatch):
+    """Reproduces IAH Nov 2026: Nov 9-12 incomplete, Nov 13-16 complete, Nov 17 partial."""
+    import requests
+    days = [hourly(f"2026-11-{d:02d}") for d in (6, 7, 8, 13, 14, 15, 16)]
+    days += [hourly("2026-11-09", hours=range(16)), hourly("2026-11-12", hours=range(3)),
+             hourly("2026-11-17", hours=range(16))]
+    psv = pd.concat(days).to_csv(sep="|", index=False)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: Resp(200, psv))
+    monkeypatch.setattr(config, "SOURCE", "ghcnh")
+    monkeypatch.setattr(config, "GAP_CONFIRM_DAYS", 2)
+    now = datetime(2026, 11, 20, tzinfo=timezone.utc)
+    st = lambda d: data.observation_status(date(2026, 11, d), now=now)["status"]  # noqa: E731
+    assert st(8) == "available"
+    assert [st(d) for d in (9, 10, 11, 12)] == ["missing"] * 4    # newest complete is the 16th
+    assert st(15) == "available"
+    assert st(17) == "pending"                                     # newest day, still filling in
+    assert st(18) == "pending"

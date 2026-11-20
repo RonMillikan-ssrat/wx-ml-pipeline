@@ -26,6 +26,10 @@ Recovery
     without retries, because retrying will not fix bad data.
   - Late data: the sensor waits in reschedule mode (it frees its worker slot
     between checks) for up to 5 days, then fails and alerts.
+  - Gaps: if day D is still incomplete when a day 2+ days later is complete,
+    D is a gap in the source (station outage). The run records it in
+    data/gaps/ and skips, so later days are not blocked. Forecasts that need
+    a gap day as a lag input are skipped too, until 3 complete days exist.
   - Dead source: a missing file (404) or a feed more than 10 days behind
     fails the sensor immediately. This is how GSOD's retirement in 2025
     would have shown up: as an alert, not as a sensor waiting forever.
@@ -45,7 +49,7 @@ from datetime import datetime, timedelta, timezone
 
 from airflow.sdk import dag, get_current_context, task
 from airflow.sdk.bases.sensor import PokeReturnValue
-from airflow.sdk.exceptions import AirflowFailException
+from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 from airflow.timetables.interval import CronDataIntervalTimetable
 
 from wxml import alerts, config, data, ops, registry
@@ -69,6 +73,8 @@ def hard_fail_on_bad_data(fn):
             raise AirflowFailException(f"data validation failed: {e}") from e
         except data.SourceUnavailable as e:
             raise AirflowFailException(f"source unavailable: {e}") from e
+        except data.InsufficientHistory as e:      # gap in the source: expected, temporary
+            raise AirflowSkipException(str(e)) from e
     return wrapper
 
 
@@ -92,21 +98,29 @@ def wx_daily():
 
     @task.sensor(poke_interval=timedelta(hours=1), timeout=timedelta(days=5), mode="reschedule")
     def wait_for_obs() -> PokeReturnValue:
-        """Wait until GHCNh has a complete day D (it lags about 3 days)."""
+        """Wait until GHCNh has day D complete (it lags about 3 days), or it is
+        clear that D is a gap in the source that will never be filled."""
         d = obs_day()
         try:
-            ready = data.observation_available(d)
+            st = data.observation_status(d)
         except data.SourceUnavailable as e:         # missing or stalled feed: waiting won't help
             raise AirflowFailException(f"source unavailable: {e}") from e
         except Exception as e:                      # a network blip is "not yet", not a failure
             print(f"availability check failed, will try again: {e}")
-            ready = False
-        print(f"observation for {d}: {'available' if ready else 'not published yet'}")
-        return PokeReturnValue(is_done=ready)
+            return PokeReturnValue(is_done=False)
+        print(f"observation for {d}: {st}")
+        return PokeReturnValue(is_done=st["status"] != "pending", xcom_value=st)
 
     @task
     @hard_fail_on_bad_data
-    def validate_obs() -> dict:
+    def validate_obs(st: dict) -> dict:
+        """A gap day skips here, and the skip flows to every task after it, so the
+        run ends successfully and the next day can start."""
+        if st["status"] == "missing":
+            ops.record_gap(st, get_current_context()["run_id"])
+            raise AirflowSkipException(
+                f"no complete observation for {st['date']} ({st['hours']} hours); "
+                f"source has data through {st['newest_complete']}, so this is a gap")
         return ops.validate_day(obs_day())
 
     @task
@@ -156,7 +170,7 @@ def wx_daily():
 
     stats = check_skill()
     choice = skill_branch(stats)
-    wait_for_obs() >> validate_obs() >> verify() >> stats
+    validate_obs(wait_for_obs()) >> verify() >> stats
     choice >> [rollback(stats), skill_ok()] >> forecast()
 
 
