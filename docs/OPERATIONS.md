@@ -58,6 +58,35 @@ Before training on real data, run the comparison with GSOD (overlap: Jan to Aug 
 wxpy /opt/wx/scripts/validate_ghcnh.py
 ```
 
+Result on 2026-11-20 (239 days, 2025-01-01 to 2025-08-27):
+
+| Variable | Mean diff (GHCNh - GSOD) | Mean abs diff | Correlation |
+|---|---|---|---|
+| temp | -0.10 F | 0.29 F | 1.000 |
+| dewp | 0.11 F | 0.23 F | 1.000 |
+| slp | 0.02 mb | 0.10 mb | 1.000 |
+| wdsp | 0.05 kt | 0.22 kt | 0.994 |
+| tmax | -2.00 F | 2.04 F | 0.987 |
+| tmin | 2.06 F | 2.09 F | 0.981 |
+| prcp | -0.01 in | 0.14 in | 0.489 |
+
+Means agree almost exactly, which confirms the source and the unit
+conversions. **tmax/tmin are about 2 F narrower** because they are the
+extremes of the hourly readings; GSOD used the station's reported max/min,
+which catch peaks between readings. The model therefore predicts "highest
+hourly reading at IAH", about 2 F below the official daily maximum. Training
+and serving use the same definition, so there is no skew. Precipitation
+totals differ more (GSOD used different accumulation periods); it is a minor
+feature.
+
+Temperature reports per day are stable across years (2024: 36.0,
+2025: 35.0, 2026: 31.8), dominated by the routine :53 report, so the daily
+values are comparable between training years and the live year.
+
+Quality codes follow the ISD convention (1/5 passed all checks, 0/4/9 passed
+gross-limit checks, 2/6 suspect, 3/7 erroneous), inferred from the codes
+present rather than from GHCNh documentation. Set `WX_REJECT_QC=2,3,6,7`.
+
 ## 2. First start (bootstrap)
 
 ```bash
